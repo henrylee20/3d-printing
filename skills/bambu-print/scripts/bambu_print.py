@@ -18,6 +18,8 @@ def parser():
         if name=='status':continue
         q.add_argument('input',type=Path,help='STL、含模型的已切片单盘 3MF（重新切片）；print 也接受已准备的任务目录')
         q.add_argument('--out',type=Path,help='新的空产物目录；默认 <文件名>.print')
+        q.add_argument('--auto-place',action=argparse.BooleanOptionalAction,default=None,
+            help='默认由 Bambu CLI 自动定向并排布；--no-auto-place 保留输入朝向/坐标，模型须已在打印区')
         q.add_argument('--support',choices=['auto','on','off'],help='默认 auto：按 Bambu CLI 无支撑预切片警告决定；on/off 也先检查')
         q.add_argument('--support-angle',type=float,help='STL 的 Bambu 支撑生成阈值角，默认 45°；不改变官方风险检查规则')
         q.add_argument('--ironing',choices=['off','topmost','top'],help='STL 熨烫；默认 off')
@@ -44,6 +46,9 @@ def validate_job(directory):
     _,actual=check_archive(directory/'job.gcode.3mf')
     if d.get('blocked_reasons'):raise ValueError('；'.join(d['blocked_reasons']))
     validate_support(directory,d.get('support_report',{}),actual)
+    placement=d.get('placement')
+    if placement and sha(directory/'placed.3mf')!=placement['sha256']:
+        raise ValueError('摆放模型已变更；请重新准备')
     if (directory/'dispatch_attempt.json').exists():raise ValueError('此目录已经尝试下发；先查打印机和 receipt.json，避免重复打印')
     return d
 
@@ -127,7 +132,7 @@ def main(argv=None):
     from slicing import prepare
     if args.input.is_dir():
         if args.command!='print':raise ValueError('prepare 需要模型文件')
-        if any(getattr(args,k,None) is not None for k in ['out','support','support_angle','ironing','layer','infill','walls','bed']):
+        if any(getattr(args,k,None) is not None for k in ['out','auto_place','support','support_angle','ironing','layer','infill','walls','bed']):
             raise ValueError('已准备任务的参数来自 job.json；变更工艺请重新 prepare 源模型')
         directory=args.input.resolve();job=validate_job(directory)
     else:
@@ -136,7 +141,8 @@ def main(argv=None):
         job=prepare(args.input,directory,args,args.studio.resolve(),args.cache_dir.resolve())
     dump({'job_directory':str(directory),'estimated_seconds':job['estimated_seconds'],
           'estimated_grams':job['estimated_grams'],'support_recommended':job['support_report']['support_recommended'],
-          'support_enabled':job['support_enabled'],'blocked_reasons':job['blocked_reasons']})
+          'support_enabled':job['support_enabled'],'placement_mode':job.get('placement',{}).get('mode','legacy'),
+          'blocked_reasons':job['blocked_reasons']})
     if args.command=='prepare':return
     validate_job(directory)
     if args.dry_run:dump({'dry_run':True,'cloud_contacted':False,'printer_job_sent':False});return

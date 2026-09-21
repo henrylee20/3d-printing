@@ -9,7 +9,7 @@ description: 拓竹打印：用 Bambu Studio CLI 准备模型，通过已登录�
 # 查询当前选择的打印机；也可用 --printer 指定名称或序列号
 python scripts/bambu_print.py status
 
-# STL 保留原朝向并放到热床；开启顶面熨烫，仅准备文件
+# 自动定向、排布并检查；开启顶面熨烫，仅准备文件
 python scripts/bambu_print.py prepare panel.stl --ironing topmost --support auto --out ./print-job
 
 # 启动已经准备好的任务，使用外置 PLA
@@ -17,6 +17,8 @@ python scripts/bambu_print.py print ./print-job --printer HL-P1S
 ```
 
 在 skill 目录执行以上命令，或使用脚本的绝对路径。含模型的已切片单盘 `.3mf` 使用内嵌模型和原工艺重新切片、检查；除支撑开关外的工艺变更使用 STL。`print` 可直接接受模型，省去单独的 `prepare`。
+
+模型默认先由 Bambu CLI 自动旋转选面并排布；用户要求保留朝向或禁用自动摆放时传入 `--no-auto-place`，此时模型须已在打印区内。结果保存为 `placed.3mf`，所有后续切片沿用它；已有任务目录直接使用已保存的摆放结果。需固定 Logo 朝上等打印面要求时保留输入朝向。
 
 悬空风险以 Bambu CLI 为准。三种 `--support auto|on|off` 模式都先关闭支撑预切片，读取官方结果和日志；`auto` 发现悬空警告后启用支撑重切，`on` 始终启用，`off` 保持关闭。报告保存在 `support_report.json` / `job.json`；风险未处理或最终切片仍有警告时阻止下发。旧任务缺少官方检查记录时，重新 `prepare` 源模型。
 

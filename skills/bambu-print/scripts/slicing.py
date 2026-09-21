@@ -45,10 +45,20 @@ def runtime(studio,cache):
         save(folder/(name+'.json'),profile)
     return target
 
-def check_archive(path):
+def read_archive(path):
     with zipfile.ZipFile(path) as z:
         if z.testzip():raise ValueError('3MF ZIP 完整性校验失败')
         files={n:z.read(n) for n in z.namelist()}
+    # CLI 02.08.02.60 emits raw quotes in string-list object metadata after
+    # placement exports. Escape the attributes while preserving their values.
+    key='Metadata/model_settings.config'
+    if key in files:
+        files[key]=re.sub(rb'(<metadata key="[^"]+" value=")([^<\r\n]*)("/>)',
+            lambda m:m[1]+m[2].replace(b'"',b'&quot;')+m[3],files[key])
+    return files
+
+def check_archive(path):
+    files=read_archive(path)
     gcodes=[n for n in files if n.endswith('.gcode')]
     if gcodes!=['Metadata/plate_1.gcode']:raise ValueError('仅支持第 1 盘、单盘已切片 3MF')
     code=files[gcodes[0]]
@@ -184,29 +194,40 @@ def prepare(source,out,args,studio,cache):
 
     env=os.environ.copy();env['LD_LIBRARY_PATH']=str(studio/'bin');env['LC_ALL']='C'
     executable=runtime(studio,cache);passes={}
+    auto_place=args.auto_place is not False
+    placed=out/'placed.3mf'
+    command=[str(executable),'--datadir',str(out/'placement_data'),'--debug','2','--check-preset',
+        '--load-settings',str(out/'machine.json')+(';' + str(out/'process.json') if is_stl else ''),
+        '--load-filaments',str(out/'filament.json')]
+    if is_stl:command+=['--curr-bed-type',BED_NAMES[args.bed or 'textured']]
+    command+=['--orient','1' if auto_place else '0','--arrange','1' if auto_place else '0','--ensure-on-bed',
+        '--export-3mf',placed.name,'--outputdir',str(out),str(source)]
+    with (out/'placement.log').open('w') as log:
+        result=subprocess.run(command,cwd=out,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=600)
+    if result.returncode:raise ValueError(f'Bambu CLI 摆放失败 ({result.returncode})；查看 {out}/placement.log')
+    placed_files=read_archive(placed)
+    if '3D/3dmodel.model' not in placed_files:raise ValueError('Bambu CLI 未导出摆放模型')
+    ET.fromstring(placed_files['Metadata/model_settings.config'])
+    zip_write(placed,placed_files)
+    placed_config=json.loads(placed_files['Metadata/project_settings.config'])
+    placement={'mode':'auto' if auto_place else 'preserve','file':placed.name,'sha256':digest(placed)}
     def run_pass(enabled):
         name='check-with-support' if enabled else 'check-no-support'
         directory=out/name;directory.mkdir()
-        pass_process={**process,'enable_support':'1' if enabled else '0'}
+        pass_process={**placed_config,'enable_support':'1' if enabled else '0'}
         # Forced layers also make has_support() true and skip Bambu's check.
         if not enabled:pass_process['enforce_support_layers']='0'
-        command=[str(executable),'--datadir',str(directory/'studio_data'),'--debug','2','--check-preset']
-        if is_stl:
-            save(directory/'process.json',pass_process)
-            command+=['--load-settings',str(out/'machine.json')+';'+str(directory/'process.json'),
-                '--load-filaments',str(out/'filament.json'),'--curr-bed-type',BED_NAMES[args.bed or 'textured']]
-            model=source
-        else:
-            # Slice the embedded model, not an unrelated STL or pre-existing G-code.
-            files=dict(input_files);files['Metadata/project_settings.config']=json.dumps(pass_process).encode()
-            settings=ET.fromstring(files['Metadata/model_settings.config'])
-            for m in settings.iter('metadata'):
-                if m.attrib.get('key')=='enable_support':m.set('value',pass_process['enable_support'])
-                if not enabled and m.attrib.get('key')=='enforce_support_layers':m.set('value','0')
-            files['Metadata/model_settings.config']=ET.tostring(settings,encoding='utf-8',xml_declaration=True)
-            model=directory/'input.3mf';zip_write(model,files)
-            command+=['--load-settings',str(out/'machine.json'),'--load-filaments',str(out/'filament.json')]
-        command+=['--orient','0','--arrange','1' if is_stl else '0','--ensure-on-bed',
+        command=[str(executable),'--datadir',str(directory/'studio_data'),'--debug','2','--check-preset',
+            '--load-settings',str(out/'machine.json'),'--load-filaments',str(out/'filament.json')]
+        # Both passes share the placed model; only support settings change.
+        files=dict(placed_files);files['Metadata/project_settings.config']=json.dumps(pass_process).encode()
+        settings=ET.fromstring(files['Metadata/model_settings.config'])
+        for m in settings.iter('metadata'):
+            if m.attrib.get('key')=='enable_support':m.set('value',pass_process['enable_support'])
+            if not enabled and m.attrib.get('key')=='enforce_support_layers':m.set('value','0')
+        files['Metadata/model_settings.config']=ET.tostring(settings,encoding='utf-8',xml_declaration=True)
+        model=directory/'input.3mf';zip_write(model,files)
+        command+=['--orient','0','--arrange','0','--ensure-on-bed',
             '--slice','0','--export-3mf',job.name,'--outputdir',str(directory),str(model)]
         with (directory/'slice.log').open('w') as log:
             result=subprocess.run(command,cwd=directory,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=600)
@@ -215,6 +236,7 @@ def prepare(source,out,args,studio,cache):
         _,actual=check_archive(directory/job.name)
         if actual['support_enabled']!=enabled:raise ValueError('Bambu CLI 未采用指定的支撑设置')
         passes[name]={**warnings,'support_enabled':enabled,'support_paths_present':actual['support_paths_present'],
+            'placement_sha256':placement['sha256'],
             'sha256':{n:digest(directory/n) for n in ['result.json','slice.log']}}
         return name
 
@@ -228,9 +250,7 @@ def prepare(source,out,args,studio,cache):
     files,report=check_archive(job);original=files['Metadata/plate_1.gcode']
     # Headless CLI omits preview images although its package relationships name them.
     for name,size in [('plate_1.png',512),('plate_1_small.png',128)]:
-        if 'Metadata/'+name not in files:
-            if is_stl:files['Metadata/'+name]=preview_png(source,size)
-            elif 'Metadata/'+name in input_files:files['Metadata/'+name]=input_files['Metadata/'+name]
+        files['Metadata/'+name]=preview_png(job,size)
     # Match official config export: omit executable G-code and its relationships.
     zip_write(job,files)
     config={n:b for n,b in files.items() if not n.endswith(('.gcode','.gcode.md5'))}
@@ -244,7 +264,7 @@ def prepare(source,out,args,studio,cache):
     with zipfile.ZipFile(job) as z:
         if z.read('Metadata/plate_1.gcode')!=original:raise ValueError('封装时 G-code 发生变化')
     blocked=blocking_reasons(passes['check-no-support'],passes[final],report)
-    report.update(source=str(source),source_sha256=digest(source),support_report=screen,
+    report.update(source=str(source),source_sha256=digest(source),support_report=screen,placement=placement,
         support_mode=support,slicer_support_decision='generated' if report['support_paths_present'] else 'none generated',slicer_warnings=passes[final]['warnings'],blocked_reasons=blocked,job_sha256=digest(job),
         config_sha256=digest(out/'cloud_config.3mf'),thumbnails_available='Metadata/plate_1.png' in files,source_type='stl' if is_stl else 'resliced_3mf',printer_model='P1S',nozzle_mm=.4,material='PLA',feed_source='external')
     save(out/'job.json',report)
