@@ -1,0 +1,4 @@
+interface:
+  display_name: "拓竹云端打印"
+  short_description: "使用 Bambu Studio CLI 切片并通过已登录账号在 P1S 上打印"
+  default_prompt: "使用 $bambu-print 将这个模型用外置 PLA 料盘打印。"

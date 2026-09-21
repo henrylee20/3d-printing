@@ -1,0 +1,12 @@
+{
+  "bambu_networking.hpp": {
+    "source": "https://github.com/bambulab/BambuStudio/blob/v02.08.02.60/src/slic3r/Utils/bambu_networking.hpp",
+    "license_file": "BambuStudio-LICENSE.txt",
+    "sha256": "45d0ac80081fc60ed9cd485d9961d41066c59a3056bebdf41b0eb82f9e86a069"
+  },
+  "json.hpp": {
+    "source": "https://github.com/nlohmann/json/blob/v3.12.0/single_include/nlohmann/json.hpp",
+    "license_file": "json-LICENSE.MIT",
+    "sha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63"
+  }
+}
